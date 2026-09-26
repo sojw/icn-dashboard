@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>공항 라이브</title>
+<meta name="description" content="지금 공항에서 뜨고 내리는 비행기를 그냥 보는 화면">
+<meta name="theme-color" content="#070b14">
+
+<!-- 홈 화면 앱(PWA). '홈 화면에 추가' 하면 주소창 없이 전체화면으로 뜬다.
+     잠금화면에는 웹이 올라갈 수 없다 — 그건 네이티브 위젯의 영역이다. -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="인천 라이브">
+<!-- black-translucent 라야 3D 장면이 상태표시줄 뒤까지 찬다. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>">
+<style>
+  :root {
+    /* 정보창(어두운 유리) 안에서 쓰는 고정 색 */
+    --fg:#eef3fb; --dim:#93a3bd; --faint:#66748e;
+    --line:rgba(238,243,251,.10); --bg:#070b14;
+    /* 장면 위에 얹히는 글자 — 하늘 밝기에 따라 JS 가 바꾼다.
+       OS 의 다크/라이트가 아니라 '지금 인천 하늘' 을 따라간다. */
+    --sfg:#eef3fb; --sdim:#93a3bd; --sfaint:#66748e; --saccent:#7fd7e8;
+    --shadow:0 1px 14px rgba(0,0,0,.55);
+    --pad:max(20px,env(safe-area-inset-top)) 20px max(20px,env(safe-area-inset-bottom));
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; overflow:hidden; background:var(--bg); color:var(--fg);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard",
+    "Noto Sans KR",system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+  canvas { display:block; touch-action:none; }
+
+  /* 화면 가장자리를 눌러 시선을 가운데로 모은다 */
+  #vignette { position:fixed; inset:0; pointer-events:none; z-index:1;
+    background:radial-gradient(ellipse 78% 68% at 50% 46%,
+      transparent 42%, rgba(4,7,13,.30) 78%, rgba(4,7,13,.62) 100%); }
+
+  #hud { position:fixed; inset:0; pointer-events:none; padding:var(--pad); z-index:2; }
+  #hud > * { pointer-events:none; }
+
+  /* 상단 — 상자를 없애고 글자만 남긴다 */
+  #top { position:absolute; top:max(20px,env(safe-area-inset-top)); left:20px;
+    text-shadow:var(--shadow); color:var(--sfg); }
+  #title { font-size:10.5px; font-weight:600; letter-spacing:.17em; color:var(--sfaint);
+    transition:opacity .9s ease; }
+  #clock { font-variant-numeric:tabular-nums; font-size:46px; font-weight:150;
+    letter-spacing:-.015em; line-height:1.08; margin:5px 0 0 -2px;
+    transition:opacity .9s ease; }
+  #stat { color:var(--sdim); font-size:12px; margin-top:7px; letter-spacing:.005em;
+    transition:opacity .9s ease; }
+  #stat b { color:var(--sfg); font-weight:500; font-variant-numeric:tabular-nums; }
+  #stat i { font-style:normal; color:var(--sfaint); margin:0 5px; }
+  #speed { margin-top:12px; font:inherit; font-size:11px; font-weight:600;
+    letter-spacing:.04em; color:var(--sfaint); background:transparent;
+    border:1px solid currentColor; border-radius:999px; padding:3.5px 12px;
+    cursor:pointer; pointer-events:auto; transition:opacity .9s ease, color .3s, border-color .3s; }
+  #speed:hover { color:var(--sdim); }
+  #speed.on { color:var(--saccent); }
+  #apt { display:flex; gap:4px; margin-top:10px; pointer-events:auto;
+    transition:opacity .9s ease; flex-wrap:wrap; max-width:260px; }
+  #apt a { font-size:11px; font-weight:600; letter-spacing:.03em;
+    color:var(--sfaint); text-decoration:none; padding:3.5px 10px;
+    border:1px solid transparent; border-radius:999px; transition:color .25s, border-color .25s; }
+  #apt a:hover { color:var(--sdim); }
+  #apt a.on { color:var(--saccent); border-color:currentColor; }
+  #stale { color:#e8a44e; display:none; margin-top:8px; font-size:11.5px; }
+
+  /* 하단 — 지금 따라가는 비행기 */
+  #watch { position:absolute; left:20px; right:20px; text-align:center;
+    bottom:calc(max(20px,env(safe-area-inset-bottom)) + 26px);
+    opacity:0; transition:opacity 1.1s ease; text-shadow:var(--shadow); color:var(--sfg); }
+  #watch .no { font-size:15px; font-weight:500; letter-spacing:.02em; }
+  #watch .rt { font-size:11.5px; color:var(--sdim); margin-top:2px; letter-spacing:.01em; }
+  #credit { position:absolute; right:20px; bottom:max(20px,env(safe-area-inset-bottom));
+    color:var(--sfaint); font-size:9.5px; letter-spacing:.02em; opacity:.75;
+    transition:opacity 1.1s ease; }
+  @media (max-width:699px){ #credit { left:20px; text-align:center; bottom:4px; } }
+  #hint { position:absolute; left:20px; right:20px; text-align:center;
+    bottom:max(20px,env(safe-area-inset-bottom));
+    color:var(--sfaint); font-size:11px; transition:opacity 1.1s ease;
+    text-shadow:var(--shadow); }
+
+  /* 비행기를 눌렀을 때 */
+  #info { position:absolute; left:20px; right:20px;
+    bottom:max(20px,env(safe-area-inset-bottom)); display:none;
+    pointer-events:auto; padding:15px 17px 16px; border-radius:16px;
+    background:linear-gradient(180deg, rgba(11,17,29,.74), rgba(8,12,21,.80));
+    border:1px solid var(--line); backdrop-filter:blur(18px) saturate(1.2);
+    -webkit-backdrop-filter:blur(18px) saturate(1.2);
+    box-shadow:0 8px 34px rgba(0,0,0,.42); animation:rise .32s ease both; }
+  @keyframes rise { from { opacity:0; transform:translateY(7px) } to { opacity:1; transform:none } }
+  @media (min-width:700px){ #info { right:auto; min-width:344px; max-width:430px; } }
+  #info .no { font-size:19px; font-weight:600; letter-spacing:-.005em; }
+  #info .rt { color:var(--dim); margin:4px 0 11px; font-size:12.5px; }
+  #info .meta { display:flex; flex-wrap:wrap; gap:5px; }
+  #info .meta span { border:1px solid var(--line); border-radius:8px; padding:2.5px 8px;
+    font-size:11px; color:var(--faint); }
+  #info .meta span b { color:var(--dim); font-weight:600; }
+  #close { position:absolute; top:10px; right:12px; pointer-events:auto; cursor:pointer;
+    color:var(--faint); font-size:19px; line-height:1; padding:5px; }
+
+  /* 손을 떼면 화면이 물러난다. 이 화면의 핵심이다. */
+  body.resting #title, body.resting #stat,
+  body.resting #speed, body.resting #apt,
+  body.resting #hint, body.resting #credit { opacity:0; }
+  body.resting #clock { opacity:.42; }
+
+  #boot { position:fixed; inset:0; display:grid; place-items:center; background:var(--bg);
+    color:var(--dim); font-size:13px; z-index:9;
+    transition:opacity .5s, visibility 0s .5s; }
+  #boot.gone { opacity:0; visibility:hidden; pointer-events:none; }
+</style>
+</head>
+<body>
+<div id="boot">공항을 불러오는 중…</div>
+<div id="vignette"></div>
+<div id="hud">
+  <div id="top">
+    <div id="title">AIRPORT LIVE</div>
+    <div id="clock">--:--</div>
+    <div id="stat">도착 <b id="nArr">0</b><i>·</i>출발 <b id="nDep">0</b><i>·</i>하늘 <b id="nAir">0</b></div>
+    <button id="speed" type="button">4배속</button>
+    <div id="apt"></div>
+    <div id="stale"></div>
+  </div>
+  <div id="watch"><div class="no" id="wNo"></div><div class="rt" id="wRt"></div></div>
+  <div id="hint">드래그로 돌리기 · 비행기를 누르면 정보</div>
+  <div id="credit"></div>
+  <div id="info">
+    <div id="close">×</div>
+    <div class="no" id="iNo"></div>
+    <div class="rt" id="iRt"></div>
+    <div class="meta" id="iMeta"></div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three.module.min.js",
+  "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
+  "three/addons/utils/BufferGeometryUtils.js": "./vendor/BufferGeometryUtils.js"
+} }
+</script>
+
+<script>
+// 모듈이 뜨기 전에 죽으면 아래 module 스크립트는 아예 실행되지 않는다.
+// 그러면 '불러오는 중' 만 영원히 남아 원인을 알 수 없다. 여기서 이유를 적는다.
+(function () {
+  var boot = function () { return document.getElementById('boot'); };
+  var say = function (msg, detail) {
+    var el = boot(); if (!el) return;
+    el.classList.remove('gone');
+    el.style.visibility = 'visible'; el.style.opacity = '1';
+    el.innerHTML = '<div style="max-width:30em;padding:0 20px;text-align:center;line-height:1.7">'
+      + msg + (detail ? '<br><span style="opacity:.6;font-size:11px;word-break:break-all">'
+      + String(detail).slice(0, 300) + '</span>' : '') + '</div>';
+  };
+  window.__bootFail = say;
+
+  // importmap 미지원 브라우저 (iOS Safari 16.3 이하 등)
+  if (!HTMLScriptElement.supports || !HTMLScriptElement.supports('importmap')) {
+    return say('이 브라우저는 지원하지 않습니다.<br>Safari 16.4+ 또는 최신 Chrome 에서 열어 주세요.');
+  }
+  // WebGL
+  try {
+    var c = document.createElement('canvas');
+    if (!(c.getContext('webgl2') || c.getContext('webgl'))) {
+      return say('이 브라우저에서 3D(WebGL)를 쓸 수 없습니다.<br>저전력 모드나 데스크톱 모드를 확인해 보세요.');
+    }
+  } catch (e) { return say('3D(WebGL) 초기화에 실패했습니다.', e && e.message); }
+
+  window.addEventListener('error', function (e) {
+    if (e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK'))
+      say('스크립트를 불러오지 못했습니다.', e.target.src || e.target.href);
+    else if (e.message) say('오류가 났습니다.', e.message);
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    say('불러오다 실패했습니다.', (e.reason && (e.reason.message || e.reason)) || '');
+  });
+
+  // 10초 안에 씬이 안 뜨면 그 사실을 알린다. 조용히 멈춰 있는 것이 제일 나쁘다.
+  setTimeout(function () {
+    if (!window.__sceneUp && boot() && boot().isConnected)
+      say('화면을 띄우지 못했습니다.<br>네트워크가 <code>vendor/</code> 파일을 막고 있을 수 있습니다.');
+  }, 10000);
+})();
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { phase, isFlying, heroScore } from './phase.js';
+
+// 쿼리 훅은 여러 곳에서 쓰이므로 맨 위에 둔다. 아래쪽에 두었다가
+// 카메라 코드가 먼저 참조해 TDZ 오류(Cannot access 'QS' before initialization)가 났다.
+const QS = new URLSearchParams(location.search);
+
+// ---------------------------------------------------------------------------
+// 좌표계 : 1 유닛 = 100 m.  +X 동, -Z 북.  방위각 θ(0=북,90=동) → (sinθ, 0, -cosθ)
+//
+// 배치는 더 이상 손으로 만든 것이 아니다. layout.json 이 OpenStreetMap 의 실제
+// 인천공항 도형(활주로 4본·유도로·터미널·에이프런·주기장 221곳)을 담고 있고,
+// build_layout.py 가 위경도를 이 좌표계로 바꿔 넣는다.
+// ---------------------------------------------------------------------------
+const deg = d => d * Math.PI / 180;
+const dirOf = b => new THREE.Vector3(Math.sin(deg(b)), 0, -Math.cos(deg(b)));
+
+const APS = await (await fetch('airports.json', { cache: 'no-cache' })).json();
+const A = (QS.get('a') || APS.default).toUpperCase();
+const AP = APS.list[A] || APS.list[APS.default];
+const L = await (await fetch(`layout-${A}.json`, { cache: 'force-cache' })).json();
+const V = (p, y = 0) => new THREE.Vector3(p[0], y, p[1]);        // [x,z] -> Vector3
+
+// 주기장: 번호 -> [x, z, 주기 방위]. OSM 에 있는 것이 81% 다.
+const STANDS = L.stands;
+const KNOWN = Object.keys(STANDS).filter(k => /^\d+$/.test(k))
+  .map(Number).sort((x, y) => x - y);
+
+// OSM 에 없는 번호는 가장 가까운 번호 옆에 세운다. 주기장 번호는 공간 순서를
+// 따르므로 217 이 없으면 215 옆이 맞다. 없다고 비행기를 지우지는 않는다.
+// 번호가 없는 주기장. 제주는 OSM 에 129곳이 있는데 번호가 하나도 없다.
+// 위치는 **실제 주기장**이고 번호만 모르는 것이므로, 번호를 모르는 편을
+// 여기에 결정적으로 배정한다. 자리는 진짜지만 **번호는 맞지 않는다.**
+const POOL = L.standPool || [];
+const standCache = new Map();
+function standOf(ref) {
+  const key = String(ref || '').trim().toUpperCase();
+  if (standCache.has(key)) return standCache.get(key);
+  let v = STANDS[key];
+  if (!v) {
+    const n = parseInt(key, 10);
+    if (Number.isFinite(n) && KNOWN.length) {
+      // 번호는 공간 순서를 따른다 — 217 이 없으면 215 옆이 맞다.
+      let best = KNOWN[0];
+      for (const k of KNOWN) if (Math.abs(k - n) < Math.abs(best - n)) best = k;
+      const s = STANDS[String(best)];
+      const off = Math.max(-6, Math.min(6, n - best)) * 0.32;
+      v = [s[0] + Math.sin(deg(s[2] + 90)) * off, s[1] - Math.cos(deg(s[2] + 90)) * off,
+           s[2], s[3], s[4], s[5]];
+    } else if (POOL.length) {
+      let h = 0;
+      for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+      v = POOL[h % POOL.length];
+    } else v = [0, 0, 0, 0, 0, 0];
+  }
+  standCache.set(key, v);
+  return v;
+}
+
+// 활주로. layout 이 전부 같은 방향(33/34 운용)으로 맞춰 준다.
+const RWYS = L.runways.map(r => ({
+  ref: r.ref, hdg: r.hdg, w: r.w,
+  thr: V(r.pts[0]), end: V(r.pts[1]),
+}));
+// 도착은 주기장에서 가장 가까운 활주로, 출발은 그 다음 것을 쓴다.
+// 같은 활주로에 몰리지 않고, 실제 위치에서 나오는 배정이라 그림이 자연스럽다.
+const rwyCache = new Map();
+function runwayFor(f) {
+  const key = f.dir + (f.stand || '?');
+  if (rwyCache.has(key)) return rwyCache.get(key);
+  const s = standOf(f.stand);
+  const d = RWYS.map((r, i) => {
+    const ax = r.end.x - r.thr.x, az = r.end.z - r.thr.z;
+    const t = Math.max(0, Math.min(1,
+      ((s[0] - r.thr.x) * ax + (s[1] - r.thr.z) * az) / (ax * ax + az * az)));
+    return { i, d: Math.hypot(s[0] - (r.thr.x + ax * t), s[1] - (r.thr.z + az * t)) };
+  }).sort((p, q) => p.d - q.d);
+  const r = RWYS[(f.dir === 'A' ? d[0] : d[1 % d.length]).i];
+  rwyCache.set(key, r);
+  return r;
+}
+const ease = p => p * p * (3 - 2 * p);
+
+// 이동 벡터 → 방위각(0=북, 90=동). 기체의 코는 -Z 를 향하게 만들어져 있다.
+const bearingOfDelta = (dx, dz) => (Math.atan2(dx, -dz) * 180 / Math.PI + 360) % 360;
+// 각도를 짧은 쪽으로 감아 보간한다. 안 하면 359 -> 1 에서 한 바퀴 돈다.
+function lerpAngle(a, b, t) {
+  let d = ((b - a + 540) % 360) - 180;
+  return (a + d * t + 360) % 360;
+}
+
+// 위치만 낸다. 기수는 frame() 에서 '조금 뒤 위치 - 지금 위치' 로 뽑는다.
+// 전부 실제 좌표다 — 주기장은 OSM 의 그 자리이고, 활주로도 그 활주로다.
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
+
+function transform(f, ph, out) {
+  const rw = runwayFor(f);
+  const st = standOf(f.stand);
+  const stand = _c.set(st[0], 0.12, st[1]);
+  // 기수를 돌린 방향으로 조금 나온 지점. 여기서 유도로로 합류한다.
+  const lead = _b.copy(stand).addScaledVector(dirOf(st[2] + 180), 1.9);
+  const brg = f.brg ?? 0;
+  const AIR = 200;                                    // 접근·상승 경로 길이(유닛)
+
+  switch (ph.k) {
+    case 'approach': {
+      const p = ease(ph.p);
+      const far = dirOf(brg).multiplyScalar(AIR).add(rw.thr);
+      out.pos.lerpVectors(far, rw.thr, p).setY((1 - p) * (1 - p) * 20 + 0.12);
+      return;
+    }
+    case 'rollout':
+      out.pos.lerpVectors(rw.thr, rw.end, ease(ph.p) * 0.72).setY(0.12);
+      return;
+    case 'taxiIn': {
+      const p = ease(ph.p);
+      _a.lerpVectors(rw.thr, rw.end, 0.72).setY(0.12);
+      out.pos.copy(p < .5 ? _a.lerp(lead, p * 2) : lead.clone().lerp(stand, (p - .5) * 2));
+      out.pos.y = 0.12; return;
+    }
+    case 'park': out.pos.copy(stand); return;
+    case 'push':
+      out.pos.copy(stand).lerp(lead, ease(ph.p)); return;
+    case 'taxiOut': {
+      const p = ease(ph.p);
+      out.pos.copy(lead).lerp(rw.thr, p); out.pos.y = 0.12; return;
+    }
+    case 'lineup': out.pos.copy(rw.thr).setY(0.12); return;
+    case 'roll':
+      out.pos.lerpVectors(rw.thr, rw.end, ph.p * ph.p * 0.6).setY(0.12);
+      return;
+    case 'climb': {
+      const p = ease(Math.min(1, ph.p));
+      _a.lerpVectors(rw.thr, rw.end, 0.6).setY(0);
+      const far = dirOf(brg).multiplyScalar(AIR).add(_a);
+      out.pos.lerpVectors(_a, far, p).setY(p * p * 26 + 0.12);
+      return;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 씬
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));   // 모바일 발열이 체류시간을 죽인다
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 1, 1400);
+camera.position.set(38, 29, 41);
+
+const AIRPORT_R = (L.radius || 33) * 0.58;                                 // 공항이 차지하는 반경(유닛)
+function fitDistance() {
+  const vFov = deg(camera.fov);
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+  return AIRPORT_R / Math.tan(Math.min(vFov, hFov) / 2);
+}
+// ?look=x,z 로 시선을 고정한다. 확대해서 특정 주기장을 확인할 때 쓴다.
+const LOOK_AT = (QS.get('look') || '').split(',').map(Number);
+function fitCamera() {
+  if (LOOK_AT.length === 2 && LOOK_AT.every(Number.isFinite))
+    controls.target.set(LOOK_AT[0], 0, LOOK_AT[1]);
+  const d = Number(QS.get('cam')) || fitDistance();
+  controls.minDistance = 1.8;                         // 180 m — 기체 옆까지 간다
+  controls.maxDistance = d * 3.2;
+  if (camera.position.length() < d) camera.position.setLength(d);
+}
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.maxPolarAngle = deg(81); controls.enablePan = false;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.28;   // 멍때리기의 기본값
+let idle = 0;
+controls.addEventListener('start', () => { controls.autoRotate = false; idle = 0; manualUntil = performance.now() + 10000; });
+controls.addEventListener('end', () => { idle = performance.now(); manualUntil = performance.now() + 10000; });
+let manualUntil = 0;
+
+// 하늘 돔 — 단색 배경보다 수평선이 산다.
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false,
+  uniforms: { top: { value: new THREE.Color() }, bot: { value: new THREE.Color() } },
+  vertexShader: 'varying float h; void main(){ h = normalize(position).y;' +
+    ' gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+  fragmentShader: 'uniform vec3 top; uniform vec3 bot; varying float h;' +
+    ' void main(){ gl_FragColor = vec4(mix(bot, top, smoothstep(-0.04, 0.55, h)), 1.0); }',
+});
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(900, 32, 16), skyMat));
+
+const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+scene.add(sun, new THREE.HemisphereLight(0xaecdff, 0x263047, 1.05));
+
+// 바다와 땅
+const sea = new THREE.Mesh(new THREE.CircleGeometry(700, 64),
+  new THREE.MeshStandardMaterial({ color: 0x24466b, roughness: .5, metalness: .15 }));
+sea.rotation.x = -Math.PI / 2; sea.position.y = -0.25; scene.add(sea);
+const land = new THREE.Mesh(new THREE.CircleGeometry(Math.max(120, (L.radius || 33) * 4), 64),
+  new THREE.MeshStandardMaterial({ color: 0x4f5d7c, roughness: .95 }));
+land.rotation.x = -Math.PI / 2; scene.add(land);
+
+// 둥근 발광 점. PointsMaterial 기본값은 네모라 확대하면 각져 보인다.
+const GLOW = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d').createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(.28, 'rgba(255,255,255,.85)');
+  g.addColorStop(.6, 'rgba(255,255,255,.22)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  const x = c.getContext('2d');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+})();
+
+const box = (w, h, d, color, rough = .85) =>
+  new THREE.Mesh(new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshStandardMaterial({ color, roughness: rough }));
+
+// ---------------------------------------------------------------------------
+// 공항 구조물 — 전부 layout.json(OpenStreetMap) 의 실제 도형이다.
+// 정적인 것은 합쳐서 드로우콜을 아낀다.
+// ---------------------------------------------------------------------------
+const litParts = [];                                  // 밤에 발광시킬 재질
+
+// [x,z] 목록 -> THREE.Shape. 압출하면 shape 의 +Y 가 월드 -Z 가 되므로 z 를 뒤집는다.
+function polyShape(pts) {
+  const sh = new THREE.Shape();
+  sh.moveTo(pts[0][0], -pts[0][1]);
+  for (let i = 1; i < pts.length; i++) sh.lineTo(pts[i][0], -pts[i][1]);
+  sh.closePath();
+  return sh;
+}
+
+// 에이프런 — 포장면. 유도로 대부분이 이 위에 있어 바닥이 먼저 깔려야 한다.
+{
+  const parts = L.aprons.map(poly => {
+    const g = new THREE.ShapeGeometry(polyShape(poly));
+    g.rotateX(-Math.PI / 2); g.translate(0, .02, 0);
+    return g;
+  });
+  if (parts.length) {
+    const m = new THREE.Mesh(mergeGeometries(parts),
+      new THREE.MeshStandardMaterial({ color: 0x3d4864, roughness: .96 }));
+    scene.add(m);
+  }
+}
+
+// 활주로 — 중심선을 따라 폭만큼 깐다.
+{
+  const parts = [];
+  for (const r of RWYS) {
+    const len = r.thr.distanceTo(r.end);
+    const g = new THREE.BoxGeometry(r.w, .06, len);
+    const m = new THREE.Matrix4().makeRotationY(Math.atan2(r.end.x - r.thr.x, r.end.z - r.thr.z));
+    m.setPosition((r.thr.x + r.end.x) / 2, .05, (r.thr.z + r.end.z) / 2);
+    parts.push(g.applyMatrix4(m));
+  }
+  scene.add(new THREE.Mesh(mergeGeometries(parts),
+    new THREE.MeshStandardMaterial({ color: 0x2f394e, roughness: .93 })));
+}
+
+// 활주로 노면 표시 — 중심선 점선과 끝단 바.
+{
+  const parts = [];
+  for (const r of RWYS) {
+    const len = r.thr.distanceTo(r.end);
+    const ux = (r.end.x - r.thr.x) / len, uz = (r.end.z - r.thr.z) / len;
+    const px = -uz, pz = ux;
+    const rot = Math.atan2(ux, uz);
+    const bar = (d, off, w, l) => {
+      const g = new THREE.BoxGeometry(w, .02, l);
+      const m = new THREE.Matrix4().makeRotationY(rot);
+      m.setPosition(r.thr.x + ux * d + px * off, .095, r.thr.z + uz * d + pz * off);
+      parts.push(g.applyMatrix4(m));
+    };
+    for (let d = 5; d < len - 5; d += 3.4) bar(d, 0, .1, 1.1);
+    for (const d of [1.2, len - 1.2])
+      for (let i = 0; i < 6; i++) bar(d, (i - 2.5) * .16, .13, 1.6);
+  }
+  scene.add(new THREE.Mesh(mergeGeometries(parts),
+    new THREE.MeshStandardMaterial({ color: 0x95a2b9, roughness: .9 })));
+}
+
+// 유도로 — 808개나 된다. 띠로 만들면 무거우니 선으로 긋는다.
+{
+  const v = [];
+  for (const way of L.taxiways)
+    for (let i = 1; i < way.length; i++)
+      v.push(way[i-1][0], .07, way[i-1][1], way[i][0], .07, way[i][1]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  scene.add(new THREE.LineSegments(g,
+    new THREE.LineBasicMaterial({ color: 0x5d6a85, transparent: true, opacity: .20 })));
+}
+
+// 터미널 — 실제 평면 모양 그대로 올린다. T1·탑승동·T2 의 곡선이 살아난다.
+{
+  const parts = L.terminals.map(poly => {
+    const g = new THREE.ExtrudeGeometry(polyShape(poly), { depth: 2.1, bevelEnabled: false });
+    g.rotateX(-Math.PI / 2);
+    return g;
+  });
+  if (parts.length) {
+    const m = new THREE.Mesh(mergeGeometries(parts),
+      new THREE.MeshStandardMaterial({ color: 0x5b6a88, roughness: .62 }));
+    litParts.push(m.material); scene.add(m);
+  }
+}
+
+// 관제탑 — OSM 이 알려준 자리에 세운다.
+const towerAt = L.tower || [0, 0];
+const tower = new THREE.Group();
+{
+  const shaft = box(.16, 1.25, .16, 0x6b7896, .6);
+  shaft.position.y = .62; tower.add(shaft);
+  const cab = box(.42, .24, .42, 0x95a6ca, .35);
+  cab.position.y = 1.36; tower.add(cab); litParts.push(cab.material);
+  const rim = box(.5, .04, .5, 0x6b7896, .5);
+  rim.position.y = 1.22; tower.add(rim);
+  const mast = box(.03, .3, .03, 0x6b7896, .6);
+  mast.position.y = 1.63; tower.add(mast);
+  tower.position.set(towerAt[0], 0, towerAt[1]);
+  scene.add(tower);
+}
+const beacon = new THREE.Mesh(new THREE.SphereGeometry(.09, 10, 8),
+  new THREE.MeshBasicMaterial({ color: 0x9dffc4, transparent: true, depthWrite: false }));
+beacon.position.set(towerAt[0], 1.82, towerAt[1]); scene.add(beacon);
+
+// ---------------------------------------------------------------------------
+// 야간 조명. 등화는 성길수록 낫다 — 촘촘히 깔면 점과 선이 뒤엉켜 공항처럼 안 보인다.
+// ---------------------------------------------------------------------------
+let lightMat = null;
+{
+  const pos = [], col = [];
+  const put = (x, z, y, c, a) => { pos.push(x, y, z); col.push(c[0], c[1], c[2], a); };
+  const WHITE = [1, .96, .88], AMBER = [1, .72, .32], GREEN = [.45, 1, .6],
+        RED = [1, .35, .3], BLUE = [.42, .68, 1];
+
+  for (const r of RWYS) {
+    const len = r.thr.distanceTo(r.end);
+    const ux = (r.end.x - r.thr.x) / len, uz = (r.end.z - r.thr.z) / len;
+    const px = -uz * (r.w / 2 + .1), pz = ux * (r.w / 2 + .1);
+    for (let d = 0; d <= len; d += 2.3) {                        // 측면등
+      put(r.thr.x + ux * d + px, r.thr.z + uz * d + pz, .09, WHITE, .85);
+      put(r.thr.x + ux * d - px, r.thr.z + uz * d - pz, .09, WHITE, .85);
+    }
+    for (let o = -.8; o <= .8; o += .4) {                        // 양 끝단
+      put(r.thr.x - uz * o, r.thr.z + ux * o, .09, GREEN, 1);
+      put(r.end.x - uz * o, r.end.z + ux * o, .09, RED, 1);
+    }
+    for (let d = -5; d < 0; d += 1.7)                            // 진입등
+      put(r.thr.x + ux * d, r.thr.z + uz * d, .09, WHITE, .55);
+  }
+
+  // 유도로 등화는 파란색이다. 밤 공항의 인상을 가장 크게 바꾼다.
+  for (const way of L.taxiways) {
+    for (let i = 1; i < way.length; i++) {
+      const a = way[i-1], b = way[i];
+      const len = Math.hypot(b[0]-a[0], b[1]-a[1]);
+      if (len < .2) continue;
+      const ux = (b[0]-a[0])/len, uz = (b[1]-a[1])/len;
+      for (let d = 0; d <= len; d += 7.5)
+        put(a[0] + ux*d, a[1] + uz*d, .1, BLUE, .38);
+    }
+  }
+
+  // 주기장 등 — 비행기가 서는 자리마다 하나씩.
+  for (const k in STANDS) put(STANDS[k][0], STANDS[k][1], .5, AMBER, .6);
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
+  lightMat = new THREE.PointsMaterial({
+    size: .42, sizeAttenuation: true, vertexColors: true, map: GLOW,
+    transparent: true, opacity: 0, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(g, lightMat);
+  pts.frustumCulled = false; scene.add(pts);
+  console.log('등화', pos.length / 3, '개');
+}
+
+// 비행기 — InstancedMesh 3벌(크기별)로 드로우콜을 묶는다.
+const SIZES = { S: .46, M: .60, L: .80, H: .96 };   // 날개폭 약 67~139 m
+function planeGeometry() {
+  const g = [
+    new THREE.BoxGeometry(.19, .19, 1.55),                       // 동체
+    new THREE.BoxGeometry(1.45, .06, .34),                       // 주익
+    new THREE.BoxGeometry(.24, .13, .30).translate(-.42, -.07, -.06),  // 엔진
+    new THREE.BoxGeometry(.24, .13, .30).translate(.42, -.07, -.06),
+    new THREE.BoxGeometry(.58, .05, .22).translate(0, .16, .60),  // 수평미익
+    new THREE.BoxGeometry(.07, .40, .30).translate(0, .28, .62),  // 수직미익
+  ];
+  return mergeGeometries(g);
+}
+const MAX = 520;
+const geo = planeGeometry();
+const mat = new THREE.MeshStandardMaterial({ roughness: .45, metalness: .25 });
+const fleet = new THREE.InstancedMesh(geo, mat, MAX);
+fleet.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+fleet.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3);
+fleet.count = 0; fleet.frustumCulled = false; scene.add(fleet);
+
+let selectedId = null;
+// 비행운. 하늘에 있는 기체 뒤로 지나온 자리를 옅게 남긴다.
+// 위치 기록을 쌓지 않고 '과거 시각의 위치' 를 그때그때 계산한다 — 되감기·배속
+// 변경·시계 고정(?now=)에도 꼬리가 어긋나지 않는다.
+const TRAIL_SEG = 7;                                  // 마디 수
+const TRAIL_DT = 3.0;                                 // 마디 간격(시뮬 초)
+const TRAIL_MAX = 90;                                 // 동시에 꼬리를 그릴 기체 수
+const trailGeo = new THREE.BufferGeometry();
+const trailPos = new Float32Array(TRAIL_MAX * TRAIL_SEG * 2 * 3);
+const trailCol = new Float32Array(TRAIL_MAX * TRAIL_SEG * 2 * 4);
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+trailGeo.setAttribute('color', new THREE.BufferAttribute(trailCol, 4));
+const trails = new THREE.LineSegments(trailGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, depthWrite: false,
+}));
+trails.frustumCulled = false; scene.add(trails);
+const outT = { pos: new THREE.Vector3(), hdg: 0 };
+let trailV = 0;                                       // 이번 프레임에 쓴 꼭짓점 수
+
+function addTrail(f, now, head) {
+  if (trailV / 6 >= TRAIL_MAX * TRAIL_SEG) return;
+  let px = head.x, py = head.y, pz = head.z;
+  for (let k = 1; k <= TRAIL_SEG; k++) {
+    const ph = phase(f, now - k * TRAIL_DT * speed, speed);
+    if (!ph || !isFlying(ph)) break;
+    transform(f, ph, outT);
+    const a = 0.30 * (1 - (k - 1) / TRAIL_SEG);       // 뒤로 갈수록 옅게
+    const i = trailV;
+    trailPos[i] = px; trailPos[i+1] = py; trailPos[i+2] = pz;
+    trailPos[i+3] = outT.pos.x; trailPos[i+4] = outT.pos.y; trailPos[i+5] = outT.pos.z;
+    const c = trailV / 3 * 4;
+    trailCol[c] = trailCol[c+1] = trailCol[c+2] = 1;
+    trailCol[c+3] = a;
+    trailCol[c+4] = trailCol[c+5] = trailCol[c+6] = 1;
+    trailCol[c+7] = a * (1 - 1 / TRAIL_SEG);
+    trailV += 6;
+    px = outT.pos.x; py = outT.pos.y; pz = outT.pos.z;
+  }
+}
+
+const COLOR = {
+  hot:   new THREE.Color(0xffffff),                   // 활주 — 지금 벌어지는 일
+  air:   new THREE.Color(0xdce9ff),                   // 하늘
+  taxi:  new THREE.Color(0x7f93b8),                   // 유도
+  park:  new THREE.Color(0x566280),                   // 주기 — 배경이되 보이게
+  board: new THREE.Color(0xffb84d),                   // 탑승 중
+  delay: new THREE.Color(0xff7a52),                   // 지연
+  pick:  new THREE.Color(0x4fe3ff),                   // 고른 것
+};
+const HOT = { roll: 1, rollout: 1, lineup: 1 };
+
+// 항법등 — 왼쪽 날개끝 빨강, 오른쪽 초록, 꼬리 흰색 섬광.
+// 기체가 몇 픽셀일 때도 '비행기' 로 읽히게 하는 것이 목적이다.
+const NAV_MAX = 160;
+const navPos = new Float32Array(NAV_MAX * 3 * 3);
+const navCol = new Float32Array(NAV_MAX * 3 * 4);
+const navGeo = new THREE.BufferGeometry();
+navGeo.setAttribute('position', new THREE.BufferAttribute(navPos, 3));
+navGeo.setAttribute('color', new THREE.BufferAttribute(navCol, 4));
+const navPts = new THREE.Points(navGeo, new THREE.PointsMaterial({
+  size: .34, sizeAttenuation: true, vertexColors: true, map: GLOW,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+}));
+navPts.frustumCulled = false; scene.add(navPts);
+let navN = 0, strobe = 0;
+
+// ---------------------------------------------------------------------------
+// 지상 활동 — 탑승 흐름과 램프버스.
+//
+// API 는 버스 탑승 여부를 알려주지 않는다. layout.json 이 주기장마다 '터미널
+// 외곽까지의 거리' 로 **원격 여부를 기하학에서 유도**해 둔다(150m 경계).
+// 움직이는 시점은 진짜다 — remark 의 탑승준비·탑승중·탑승마감, 그리고 도착.
+//
+// 사람은 1유닛=100m 축척에서 0.005유닛이라 그릴 수 없다. **흐름을 점으로
+// 추상화**한 것이지 사람 수를 나타내지 않는다.
+// ---------------------------------------------------------------------------
+const BUS_MAX = 40, FLOW_MAX = 220;
+const busGeo = new THREE.BoxGeometry(.13, .07, .30);          // 약 13×7×30 m (과장)
+const busMesh = new THREE.InstancedMesh(busGeo,
+  new THREE.MeshStandardMaterial({ color: 0xe8edf8, roughness: .45, emissive: 0x1a2030 }),
+  BUS_MAX);
+busMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+busMesh.count = 0; busMesh.frustumCulled = false; scene.add(busMesh);
+
+// 접현 주기장은 출입구까지 30m 안팎이라 '사람 점' 을 늘어놓으면 겹쳐서 한 덩어리가
+// 된다. 대신 **탑승교를 실제로 그린다** — 붙어 있는 것 자체가 사실이고, 탑승 중일
+// 때 불이 들어오면 사람이 지나간다는 뜻이 된다.
+const BRIDGE_MAX = 90;
+const bridgeGeo = new THREE.BoxGeometry(.06, .05, 1);
+const bridges = new THREE.InstancedMesh(bridgeGeo,
+  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .55 }), BRIDGE_MAX);
+bridges.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+bridges.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(BRIDGE_MAX * 3), 3);
+bridges.count = 0; bridges.frustumCulled = false; scene.add(bridges);
+const BR_M = new THREE.Matrix4(), BR_Q = new THREE.Quaternion(), BR_S = new THREE.Vector3();
+const BR_IDLE = new THREE.Color(0x4c5772), BR_BUSY = new THREE.Color(0xd9a05e);
+let bridgeN = 0;
+
+const flowPos = new Float32Array(FLOW_MAX * 3);
+const flowGeo = new THREE.BufferGeometry();
+flowGeo.setAttribute('position', new THREE.BufferAttribute(flowPos, 3));
+const flowPts = new THREE.Points(flowGeo, new THREE.PointsMaterial({
+  size: .075, sizeAttenuation: true, map: GLOW, color: 0xffd9a0,
+  transparent: true, opacity: .95, depthWrite: false,
+}));
+flowPts.frustumCulled = false; scene.add(flowPts);
+let busN = 0, flowN = 0;
+const BUS_M = new THREE.Matrix4(), BUS_Q = new THREE.Quaternion(), BUS_S = new THREE.Vector3(1,1,1);
+
+// 지금 사람이 타고 내리는가. +1 터미널→기체, -1 기체→터미널, 0 없음.
+function boardingDir(f, ph, now) {
+  if (ph.k !== 'park') return 0;
+  if (f.dir === 'D')
+    return (f.stc === 'BOARDING_SOON' || f.stc === 'BOARDING'
+         || f.stc === 'CLOSING' || f.stc === 'BOARDING_CLOSED') ? 1 : 0;
+  // 도착은 상태가 한참 '도착' 으로 남으므로 시각으로 끊는다.
+  return (f.stc === 'ARRIVED' || f.stc === 'LANDED') && now - f.est < 1500 ? -1 : 0;
+}
+
+function addGround(f, ph, now, pos) {
+  const dir = boardingDir(f, ph, now);
+  if (!dir) return;
+  const st = standOf(f.stand);
+  const dx = st[4], dz = st[5];                               // 터미널 출입구
+  if (dx === undefined) return;
+
+  if (st[3] === 1) {                                          // 원격 — 램프버스
+    if (busN >= BUS_MAX) return;
+    const cyc = ((now / 80) % 1);                             // 80초 왕복
+    const u = cyc < .5 ? cyc * 2 : 2 - cyc * 2;
+    const x = dx + (pos.x - dx) * u, z = dz + (pos.z - dz) * u;
+    const fwd = cyc < .5 ? 1 : -1;
+    BUS_Q.setFromAxisAngle(UP, -deg(bearingOfDelta((pos.x - dx) * fwd, (pos.z - dz) * fwd)));
+    BUS_M.compose(_tmpV.set(x, .05, z), BUS_Q, BUS_S);
+    busMesh.setMatrixAt(busN++, BUS_M);
+  } else {                                                    // 접현 — 탑승교 위 흐름
+    const N = 3;
+    for (let i = 0; i < N && flowN < FLOW_MAX; i++) {
+      let u = ((now / 14) + i / N) % 1;
+      if (dir < 0) u = 1 - u;
+      const j = flowN * 3;
+      flowPos[j] = dx + (pos.x - dx) * u;
+      flowPos[j + 1] = .16;
+      flowPos[j + 2] = dz + (pos.z - dz) * u;
+      flowN++;
+    }
+  }
+}
+// 접현 주기장에 기체가 서 있으면 탑승교가 붙어 있다. 탑승 중이면 불이 들어온다.
+function addBridge(f, ph, now, pos) {
+  if (ph.k !== 'park' || bridgeN >= BRIDGE_MAX) return;
+  const st = standOf(f.stand);
+  if (st[3] !== 0 || st[4] === undefined) return;
+  const dx = st[4] - pos.x, dz = st[5] - pos.z;
+  const len = Math.hypot(dx, dz);
+  if (len < .05 || len > 1.6) return;                         // 너무 멀면 다리가 아니다
+  BR_Q.setFromAxisAngle(UP, Math.atan2(dx, dz));
+  BR_S.set(1, 1, len);
+  BR_M.compose(_tmpV.set(pos.x + dx / 2, .28, pos.z + dz / 2), BR_Q, BR_S);
+  bridges.setMatrixAt(bridgeN, BR_M);
+  bridges.setColorAt(bridgeN, boardingDir(f, ph, now) ? BR_BUSY : BR_IDLE);
+  bridgeN++;
+}
+
+
+// 국기 — 하늘에 있는 기체 위에만 띄운다. 주기·유도까지 달면 화면이 시끄럽다.
+// Sprite 는 스스로 카메라를 보고, 거리에 따라 작아진다. 국가 수가 30여 개뿐이라
+// 재질을 국가별로 한 번만 만들어 돌려 쓴다.
+const FLAG_POOL = 48;
+const flagMats = new Map();
+const flagPool = [];
+let flagN = 0;
+
+function flagMat(cc) {
+  if (flagMats.has(cc)) return flagMats.get(cc);
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const x = c.getContext('2d');
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  // 이모지 국기를 못 그리는 환경(일부 Windows)에서는 두 글자가 나온다 — 그래도 읽힌다.
+  x.font = '96px "Apple Color Emoji","Noto Color Emoji","Segoe UI Emoji",sans-serif';
+  x.fillStyle = '#e8eef8';
+  x.fillText(flagOf(cc) || cc, 64, 70);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false });
+  flagMats.set(cc, m);
+  return m;
+}
+
+function addFlag(pos, cc, alpha) {
+  if (!cc || flagN >= FLAG_POOL) return;
+  let sp = flagPool[flagN];
+  if (!sp) {
+    sp = new THREE.Sprite(flagMat(cc));
+    sp.scale.setScalar(1.7);
+    scene.add(sp);
+    flagPool[flagN] = sp;
+  }
+  sp.material = flagMat(cc);
+  sp.material.opacity = alpha;
+  sp.position.set(pos.x, pos.y + .75, pos.z);
+  sp.visible = true;
+  flagN++;
+}
+
+function addNav(pos, hdg, scale, ph) {
+  if (navN >= NAV_MAX || ph.k === 'park') return;
+  const span = 0.72 * scale;                          // 날개끝까지
+  const rx = Math.cos(deg(hdg)), rz = Math.sin(deg(hdg));   // 기수 기준 오른쪽
+  const put = (dx, dz, dy, r, g, b, a) => {
+    const i = navN * 3;
+    navPos[i] = pos.x + dx; navPos[i+1] = pos.y + dy; navPos[i+2] = pos.z + dz;
+    const c = navN * 4;
+    navCol[c] = r; navCol[c+1] = g; navCol[c+2] = b; navCol[c+3] = a;
+    navN++;
+  };
+  put(-rx * span, -rz * span, .04, 1, .22, .22, .95);  // 좌현 빨강
+  put(rx * span, rz * span, .04, .25, 1, .4, .95);     // 우현 초록
+  if (strobe > .5) {                                  // 꼬리 섬광
+    const bx = Math.sin(deg(hdg + 180)), bz = -Math.cos(deg(hdg + 180));
+    put(bx * span * .8, bz * span * .8, .12, 1, 1, 1, 1);
+  }
+}
+function colorOf(f, ph, flying) {
+  if (f.id === selectedId) return COLOR.pick;
+  if (HOT[ph.k]) return COLOR.hot;                    // 구간이 상태보다 우선한다
+  if (f.stc === 'DELAYED') return COLOR.delay;
+  if (f.stc === 'BOARDING' || f.stc === 'BOARDING_SOON') return COLOR.board;
+  if (flying) return COLOR.air;
+  return ph.k === 'park' ? COLOR.park : COLOR.taxi;
+}
+
+// ---------------------------------------------------------------------------
+// 데이터
+// ---------------------------------------------------------------------------
+let DATA = null;
+async function load() {
+  const r = await fetch(`data-${A}.json?t=` + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('data.json ' + r.status);
+  const first = !DATA;
+  const prev = DATA ? simNow() : 0;
+  DATA = await r.json();
+  // 창이 10분마다 앞으로 밀린다. 시뮬 시각이 밖으로 나가지 않게 붙잡는다.
+  if (first) reanchor(Date.now() / 1000);
+  else reanchor(Math.min(Math.max(prev, DATA.windowFrom), DATA.windowTo));
+}
+
+const $ = id => document.getElementById(id);
+function updateStale() {
+  if (!DATA) return;
+  if (DATA.note) {                                    // 운항 API 미연동
+    const el = $('stale');
+    el.style.display = 'block';
+    el.textContent = `운항 데이터 없음 — ${DATA.note}`;
+    return;
+  }
+  const age = Date.now() / 1000 - DATA.generatedAt;
+  const el = $('stale');
+  // 수집이 멈추면 조용히 옛날 하늘을 계속 보여주게 된다. 그것을 드러낸다.
+  // 경고 기준은 **공항마다 다르다.** 한국공항공사 공항은 호출 비용이 커서
+  // 1시간 주기라, 30분 기준을 쓰면 정상인데도 경고가 뜬다.
+  const limit = Math.max(1800, (AP.refresh || 600) * 1.8);
+  if (age > limit) {
+    el.style.display = 'block';
+    el.textContent = `⚠ ${Math.floor(age / 60)}분 전 데이터 (갱신이 멈춘 듯)`;
+  } else el.style.display = 'none';
+}
+
+// ---------------------------------------------------------------------------
+// 하늘 — 실제 태양 고도로 색이 바뀐다. 새벽에 들어오면 어둡다.
+// ---------------------------------------------------------------------------
+const PALETTE = [
+  [-90, 0x060a12, 0x0a1020, 0.05], [-12, 0x0b1224, 0x131d33, 0.12],
+  [-6, 0x243050, 0x36405e, 0.35], [0, 0x6b5a72, 0x8d6a63, 0.75],
+  [8, 0x8fa5c8, 0xa8b8d4, 1.55], [40, 0x9dbbe0, 0xc3d6ef, 1.95],
+];
+function sunElevation(d) {
+  const day = (Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+    - Date.UTC(d.getUTCFullYear(), 0, 0)) / 864e5;
+  const decl = deg(23.44) * Math.sin(deg(360 / 365.24 * (day - 81)));
+  const h = d.getUTCHours() + d.getUTCMinutes() / 60 + d.getUTCSeconds() / 3600;
+  const ha = deg((h - 12) * 15 + L.origin[1]);        // 공항 경도
+  const lat = deg(L.origin[0]);
+  return THREE.MathUtils.radToDeg(Math.asin(
+    Math.sin(lat) * Math.sin(decl) + Math.cos(lat) * Math.cos(decl) * Math.cos(ha)));
+}
+const cA = new THREE.Color(), cB = new THREE.Color();
+let nightAmount = 0;
+
+// 장면 위 글자를 하늘 밝기에 맞춘다. OS 의 다크/라이트가 아니라 '지금 인천 하늘'
+// 을 따른다.
+//
+// 처음에 낮이면 글자를 어둡게 뒤집었는데 **측정해 보니 더 나빠졌다.**
+// 한낮에도 하늘 휘도가 78/255 라 흰 글씨가 옳았다(대비 7.3:1). 어둡게 바꾸니
+// 2.2:1 로 떨어졌다. 문제는 시계가 아니라 흐린 글자(힌트·출처)뿐이었다.
+// 그래서 낮에는 **흐린 색을 흰쪽으로 끌어올린다.**
+const DAY   = { fg: [255, 255, 255], dim: [222, 232, 246], faint: [196, 210, 230], acc: [150, 235, 255] };
+const NIGHT = { fg: [238, 243, 251], dim: [147, 163, 189], faint: [122, 137, 165], acc: [127, 215, 232] };
+const mix = (a, b, t) => `rgb(${Math.round(a[0]+(b[0]-a[0])*t)},${Math.round(a[1]+(b[1]-a[1])*t)},${Math.round(a[2]+(b[2]-a[2])*t)})`;
+let chromePainted = -1;
+function paintChrome(night) {
+  if (Math.abs(night - chromePainted) < 0.01) return;   // 프레임마다 쓰지 않는다
+  chromePainted = night;
+  const r = document.documentElement.style;
+  r.setProperty('--sfg', mix(DAY.fg, NIGHT.fg, night));
+  r.setProperty('--sdim', mix(DAY.dim, NIGHT.dim, night));
+  r.setProperty('--sfaint', mix(DAY.faint, NIGHT.faint, night));
+  r.setProperty('--saccent', mix(DAY.acc, NIGHT.acc, night));
+  // 그림자도 뒤집는다. 낮에는 흰 후광이 글자를 하늘에서 떼어 준다.
+  // 그림자는 언제나 어둡다. 낮일수록 진하게 해서 밝은 하늘에서 글자를 떼어 준다.
+  r.setProperty('--shadow', `0 1px 12px rgba(0,0,0,${(.72 - night * .3).toFixed(2)})`);
+}
+function applySky(now) {
+  const e = sunElevation(new Date(now * 1000));
+  let i = 0; while (i < PALETTE.length - 2 && e > PALETTE[i + 1][0]) i++;
+  const [e0, bg0, fog0, l0] = PALETTE[i], [e1, bg1, fog1, l1] = PALETTE[i + 1];
+  const t = THREE.MathUtils.clamp((e - e0) / (e1 - e0), 0, 1);
+  skyMat.uniforms.top.value.setHex(bg0).lerp(cB.setHex(bg1), t);
+  const horizon = cA.setHex(fog0).lerp(cB.setHex(fog1), t);
+  skyMat.uniforms.bot.value.copy(horizon);
+  scene.fog = new THREE.Fog(horizon.getHex(), 95, 400);
+  sun.intensity = THREE.MathUtils.lerp(l0, l1, t);
+  // 태양 고도 6도에서 꺼지고 -4도에서 완전히 켜진다.
+  const night = THREE.MathUtils.clamp((6 - e) / 10, 0, 1);
+  nightAmount = night;
+  paintChrome(night);
+  if (lightMat) lightMat.opacity = night * 0.8;
+  // 건물은 점광원 대신 재질로 켠다. 점으로 창문을 찍으면 사선 대시처럼 흩어진다.
+  for (const m of litParts) m.emissive.setRGB(.011 * night, .011 * night, .011 * night);
+  sun.position.set(60, Math.max(8, 20 + e * 1.6), -40);
+}
+
+// ---------------------------------------------------------------------------
+// 루프
+// ---------------------------------------------------------------------------
+const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), S = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+const _tmpV = new THREE.Vector3();
+const out = { pos: new THREE.Vector3(), hdg: 0 };
+const out2 = { pos: new THREE.Vector3(), hdg: 0 };
+const hdgMemo = new Map();                            // id -> 직전 기수(도)
+const LOOK = 4;                                       // 초. 진행 방향을 뽑는 간격
+const visible = [];                                   // instanceId → flight
+const visPos = [];                                    // instanceId → 위치(재사용 풀)
+const visScore = [];                                  // instanceId → 연출 점수
+let paused = false;
+
+// ?now=<epoch초> 로 시계를 고정할 수 있다. 새벽 3시 화면을 눈으로 보거나,
+// 두 시각을 렌더해 '정말 움직이는지' 를 비교할 때 쓴다. 평소엔 쓰이지 않는다.
+const CLOCK_OVERRIDE = Number(QS.get('now')) || 0;
+
+// 배속. 인천공항은 실제로 평균 80초에 한 번 뜨거나 내린다(측정값). 1배속이면
+// 정직하지만 한산하다. 배속을 걸면 같은 실제 운항 기록을 빨리 돌려 보는 것이다 —
+// 시각은 화면에 그대로 적어 '지금' 과 혼동되지 않게 한다.
+const SPEEDS = [1, 4, 8];
+let speed = Number(localStorage.getItem('icn.speed'));
+if (!SPEEDS.includes(speed)) speed = 4;
+let anchorReal = Date.now() / 1000, anchorSim = 0;
+
+function reanchor(sim) {
+  anchorReal = Date.now() / 1000;
+  anchorSim = sim;
+}
+function simNow() {
+  if (CLOCK_OVERRIDE) return CLOCK_OVERRIDE;
+  const real = Date.now() / 1000;
+  if (speed === 1 || !DATA) return real;
+  let t = anchorSim + (real - anchorReal) * speed;
+  const lo = DATA.windowFrom, hi = DATA.windowTo, span = hi - lo;
+  if (t > hi || t < lo) t = lo + (((t - lo) % span) + span) % span;   // 되감기
+  return t;
+}
+function setSpeed(v) {
+  const was = simNow();
+  speed = v;
+  try { localStorage.setItem('icn.speed', String(v)); } catch (e) {}
+  reanchor(speed === 1 ? Date.now() / 1000 : was);
+  paintSpeed();
+}
+function paintSpeed() {
+  $('speed').textContent = speed === 1 ? '실시간' : speed + '배속';
+  $('speed').classList.toggle('on', speed !== 1);
+}
+const PICK_TEST = QS.get('pick');                     // "x,y" 또는 "center"
+let pickTested = false;
+let lastInfoAt = 0;
+const clockNow = simNow;
+
+function frame() {
+  if (paused) return;
+  const now = clockNow();
+  applySky(now);
+
+  let n = 0, air = 0;
+  visible.length = 0;
+  trailV = 0;
+  navN = 0;
+  flagN = 0;
+  busN = 0;
+  flowN = 0;
+  bridgeN = 0;
+  strobe = (performance.now() / 1000) % 1;
+  if (DATA) for (const f of DATA.flights) {
+    const ph = phase(f, now, speed);
+    if (!ph || n >= MAX) continue;
+    transform(f, ph, out);
+
+    // 기수는 진행 방향이다. 조금 뒤(LOOK초) 위치와의 차이에서 뽑는다.
+    // 손으로 지정하면 경로와 어긋나 비행기가 옆으로 미끄러진다.
+    //
+    // **speed 를 반드시 넘긴다.** 구간 길이가 배속에 비례하므로, 빠뜨리면
+    // spans(1) 로 판정해 4배속에서는 대부분 창 밖이 되고 ahead 가 null 이 된다.
+    // 그러면 기수가 폴백값에 머문 채 북쪽만 보고 옆으로 미끄러진다.
+    let hdg;
+    const ahead = phase(f, now + LOOK * speed, speed);
+    if (ahead) {
+      transform(f, ahead, out2);
+      const dx = out2.pos.x - out.pos.x, dz = out2.pos.z - out.pos.z;
+      if (dx * dx + dz * dz > 1e-4) {
+        hdg = bearingOfDelta(dx, dz);
+        if (ph.k === 'push') hdg = (hdg + 180) % 360;   // 푸시백은 꼬리부터 나간다
+      }
+    }
+    // 못 구하면 직전 값, 그것도 없으면 **주기장의 실제 주기 방위**를 쓴다.
+    // 상수 0 을 폴백으로 두면 조용히 북쪽을 보게 된다 — 실제로 그랬다.
+    if (hdg === undefined) hdg = hdgMemo.get(f.id) ?? standOf(f.stand)[2];
+    const prev = hdgMemo.get(f.id);
+    hdg = prev === undefined ? hdg : lerpAngle(prev, hdg, 0.18);   // 떨림 방지
+    hdgMemo.set(f.id, hdg);
+
+    const s = SIZES[f.size] || 0.8;
+    Q.setFromAxisAngle(UP, -deg(hdg));
+    M.compose(out.pos, Q, S.set(s, s, s));
+    fleet.setMatrixAt(n, M);
+    const flying = isFlying(ph);
+    if (flying) {
+      air++; addTrail(f, now, out.pos);
+      // 갓 뜨거나 막 내릴 때는 옅게 — 지면 가까이에서 국기가 몰리지 않게.
+      addFlag(out.pos, f.cc, Math.min(1, .4 + out.pos.y * .08));
+    } else if (f.id === selectedId) {
+      addFlag(out.pos, f.cc, 1);                      // 고른 기체는 지상에서도 보여 준다
+    }
+    addGround(f, ph, now, out.pos);
+    addBridge(f, ph, now, out.pos);
+    fleet.setColorAt(n, colorOf(f, ph, flying));
+    addNav(out.pos, hdg, s, ph);
+    visible.push(f);
+    (visPos[n] || (visPos[n] = new THREE.Vector3())).copy(out.pos);
+    visScore[n] = heroScore(ph);
+    n++;
+  }
+  if (hdgMemo.size > 900) hdgMemo.clear();            // 지나간 편이 쌓이지 않게
+
+  if (QS.get('selftest') === 'ground' && n > 0 && !pickTested) {
+    pickTested = true;
+    let rem = 0, con = 0;
+    for (const f of visible) {
+      const ph = phase(f, now, speed);
+      if (!ph || !boardingDir(f, ph, now)) continue;
+      (standOf(f.stand)[3] === 1 ? rem++ : con++);
+    }
+    $('iNo').textContent = `탑승중 원격 ${rem} · 접현 ${con} → 버스 ${busN}대 · 탑승교 ${bridgeN}개 · 흐름점 ${flowN}`;
+    $('info').style.display = 'block';
+  }
+  if (QS.get('selftest') === 'heading' && n > 0 && !pickTested) {
+    pickTested = true;
+    // 계산한 기수값이 아니라 **실제로 그려진 메시**가 어디를 보는지 잰다.
+    // 인스턴스 행렬로 기체 로컬의 코(-Z)와 꼬리(+Z)를 월드로 옮겨 비교한다.
+    // 앞의 검증은 hdgMemo 와 진행방향만 비교해서 메시 방향 오류를 못 잡았다.
+    const M2 = new THREE.Matrix4();
+    const nose = new THREE.Vector3(), tail = new THREE.Vector3();
+    const LN = new THREE.Vector3(0, 0, -0.775), LT = new THREE.Vector3(0, 0, 0.775);
+    let worst = 0, worstNo = '', checked = 0, sum = 0, back = 0, side = 0;
+    const detail = [];
+    for (let i = 0; i < visible.length; i++) {
+      const f = visible[i];
+      const ph = phase(f, now, speed), ahead = phase(f, now + LOOK * speed, speed);
+      if (!ph || !ahead || ph.k === 'park' || ph.k === 'push') continue;
+      transform(f, ph, out); transform(f, ahead, out2);
+      const dx = out2.pos.x - out.pos.x, dz = out2.pos.z - out.pos.z;
+      if (dx * dx + dz * dz < 1e-4) continue;
+      const travel = bearingOfDelta(dx, dz);
+      fleet.getMatrixAt(i, M2);
+      nose.copy(LN).applyMatrix4(M2);
+      tail.copy(LT).applyMatrix4(M2);
+      const drawn = bearingOfDelta(nose.x - tail.x, nose.z - tail.z);
+      const dev = Math.abs(((drawn - travel + 540) % 360) - 180);
+      checked++; sum += dev;
+      if (dev > 120) back++; else if (dev > 50) side++;
+      if (dev > worst) { worst = dev; worstNo = f.no + '/' + ph.k; }
+      if (detail.length < 3) detail.push(
+        `${f.no} 기수${(hdgMemo.get(f.id) ?? -1).toFixed(0)}° 그려진${drawn.toFixed(0)}° 진행${travel.toFixed(0)}°`);
+    }
+    $('iNo').textContent =
+      `메시 ${checked}대 · 최대 ${worst.toFixed(1)}° (${worstNo}) · 평균 `
+      + `${(sum / Math.max(1, checked)).toFixed(1)}° · 뒤로 ${back} · 옆으로 ${side}`;
+    $('iRt').textContent = detail.slice(0, 3).join('   ');
+    $('info').style.display = 'block';
+  }
+  if (PICK_TEST && !pickTested && n > 0) {
+    pickTested = true;
+    const [px, py] = PICK_TEST === 'center'
+      ? [innerWidth / 2, innerHeight / 2]
+      : PICK_TEST.split(',').map(Number);
+    const i = PICK_TEST === 'center' ? nearestToCenter() : pick(px, py);
+    if (i >= 0) { selectedId = visible[i].id; show(visible[i]); }
+    else { $('iNo').textContent = '(집힌 비행기 없음)'; $('info').style.display = 'block'; }
+  }
+  if (selectedId) {
+    const cur = visible.find(f => f.id === selectedId);
+    // 매 프레임 innerHTML 을 다시 쓰면 낭비고 글자도 깜빡인다. 1초에 한 번만.
+    if (!cur) closeInfo();
+    else if (now - lastInfoAt >= 1) { lastInfoAt = now; show(cur); }
+  }
+  for (let i = flagN; i < flagPool.length; i++) flagPool[i].visible = false;
+
+  bridges.count = bridgeN;
+  bridges.instanceMatrix.needsUpdate = true;
+  bridges.instanceColor.needsUpdate = true;
+
+  busMesh.count = busN;
+  busMesh.instanceMatrix.needsUpdate = true;
+  flowGeo.setDrawRange(0, flowN);
+  flowGeo.attributes.position.needsUpdate = true;
+
+  navGeo.setDrawRange(0, navN);
+  navGeo.attributes.position.needsUpdate = true;
+  navGeo.attributes.color.needsUpdate = true;
+
+  trailGeo.setDrawRange(0, trailV / 3);
+  trailGeo.attributes.position.needsUpdate = true;
+  trailGeo.attributes.color.needsUpdate = true;
+
+  fleet.count = n;
+  fleet.instanceMatrix.needsUpdate = true;
+  fleet.instanceColor.needsUpdate = true;
+
+  // 공항 비컨. 2.2초 주기로 번쩍이고 흰색↔초록을 번갈아 낸다.
+  {
+    const ph = (now / 2.2) % 1;
+    const flash = Math.max(0, 1 - Math.abs(ph - .08) * 14);
+    beacon.material.opacity = flash * nightAmount;
+    beacon.material.color.setHex(Math.floor(now / 2.2) % 2 ? 0xffffff : 0x9dffc4);
+    beacon.visible = beacon.material.opacity > .01;
+  }
+  if (performance.now() - lastActive > REST_AFTER) document.body.classList.add('resting');
+  direct(now);
+  controls.update();
+  renderer.render(scene, camera);
+
+  const d = new Date(now * 1000);
+  $('clock').textContent = String(d.getHours()).padStart(2, '0') + ':'
+    + String(d.getMinutes()).padStart(2, '0');
+  $('nAir').textContent = air;
+}
+renderer.setAnimationLoop(frame);
+
+// ---------------------------------------------------------------------------
+// 감독 — 시계는 1:1 이다. 카메라만 지금 이착륙 중인 비행기 쪽으로 옮긴다.
+// 인천은 시간당 약 70회 이착륙이라, 따라갈 대상이 거의 항상 하나는 있다.
+// ---------------------------------------------------------------------------
+const HOLD_MIN = 9, HOLD_MAX = 34, IDLE_BACK = 6;      // 초
+let heroId = null, heroSince = 0, heroLost = 0;
+const wideTarget = new THREE.Vector3(0, 0, 0);
+const wantTarget = new THREE.Vector3();
+let wantDist = 0;
+
+function direct(now) {
+  if (LOOK_AT.length === 2 && LOOK_AT.every(Number.isFinite)) return;
+  if (performance.now() < manualUntil) { controls.autoRotate = false; return; }
+
+  let best = -1, bestS = 0, curIdx = -1;
+  for (let i = 0; i < visible.length; i++) {
+    if (visible[i].id === heroId) curIdx = i;
+    if (visScore[i] > bestS) { bestS = visScore[i]; best = i; }
+  }
+  const held = now - heroSince;
+  const curOk = curIdx >= 0 && visScore[curIdx] > 0;
+
+  if (!curOk || held > HOLD_MAX) {
+    // 지금 대상이 끝났거나 너무 오래 봤으면 바꾼다. 다만 최소 유지시간은 지킨다.
+    if (best >= 0 && (!curOk || held > HOLD_MIN)) {
+      heroId = visible[best].id; heroSince = now; heroLost = 0;
+    } else if (!curOk) {
+      heroLost = heroLost || now;
+    }
+  } else heroLost = 0;
+
+  const idx = heroId ? visible.findIndex(f => f.id === heroId) : -1;
+  const following = idx >= 0 && visScore[idx] > 0;
+
+  if (following) {
+    // 비행기 쪽으로 시선을 기울이되 공항을 놓지 않는다. 접근기는 200유닛 밖에
+    // 있을 수 있어서, 묶어두지 않으면 시선이 바다 한가운데로 끌려간다.
+    wantTarget.copy(visPos[idx]).multiplyScalar(0.55);
+    if (wantTarget.length() > 26) wantTarget.setLength(26);
+    const far = Math.min(1, visPos[idx].length() / 140);
+    wantDist = fitDistance() * (0.30 + 0.42 * far);    // 멀리 있으면 조금 물러선다
+    controls.autoRotate = true; controls.autoRotateSpeed = 0.5;
+    const hf = visible[idx];
+    if (hf.id !== watchShown) {
+      watchShown = hf.id;
+      $('watch').style.opacity = 0;
+      clearTimeout(watchTimer);
+      watchTimer = setTimeout(() => {
+        $('wNo').textContent = (hf.dir === 'A' ? '착륙  ' : '이륙  ') + hf.no;
+        const g = flagOf(hf.cc);
+        $('wRt').textContent = hf.dir === 'A'
+          ? `${g} ${hf.city} → 🇰🇷 ${AP.short}` : `🇰🇷 ${AP.short} → ${g} ${hf.city}`;
+        $('watch').style.opacity = 1;
+      }, 340);
+    }
+  } else {
+    // 따라갈 것이 없으면 천천히 공항 전체로 돌아간다.
+    wantTarget.copy(wideTarget);
+    wantDist = fitDistance();
+    controls.autoRotate = true; controls.autoRotateSpeed = 0.22;
+    if (!heroLost || now - heroLost > IDLE_BACK) { $('watch').style.opacity = 0; watchShown = null; }
+  }
+
+  controls.target.lerp(wantTarget, 0.014);
+  const d = camera.position.distanceTo(controls.target);
+  if (Math.abs(d - wantDist) > 0.5) {
+    camera.position.sub(controls.target)
+      .setLength(THREE.MathUtils.lerp(d, wantDist, 0.02)).add(controls.target);
+  }
+}
+
+let watchShown = null, watchTimer = 0;
+
+// 탭이 안 보이면 렌더도 폴링도 멈춘다. 안 하면 노트북 팬이 돈다.
+// 손을 떼면 UI 가 물러난다. 이 화면의 핵심 동작이다.
+const REST_AFTER = Number(QS.get('rest')) || 5500;   // ?rest=<ms> 로 점검한다
+let lastActive = performance.now();
+function wake() {
+  lastActive = performance.now();
+  document.body.classList.remove('resting');
+}
+for (const e of ['pointerdown', 'pointermove', 'wheel', 'keydown', 'touchstart'])
+  addEventListener(e, wake, { passive: true });
+
+document.addEventListener('visibilitychange', () => {
+  paused = document.hidden;
+  if (!paused) { load().then(refreshHud).catch(() => {}); }
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  fitCamera();
+});
+fitCamera();
+
+// ---------------------------------------------------------------------------
+// 클릭
+// ---------------------------------------------------------------------------
+// 삼각형 적중을 요구하면 비행기를 누를 수 없다. 화면에서 기체는 몇 픽셀짜리다.
+// 대신 각 기체를 화면 좌표로 투영해 손가락에서 가장 가까운 것을 집는다.
+const PICK_PX = 44;                                   // 손가락 크기
+const _p = new THREE.Vector3();
+function pick(cx, cy) {
+  let best = -1, bestD = PICK_PX;
+  for (let i = 0; i < visible.length; i++) {
+    _p.copy(visPos[i]).project(camera);
+    if (_p.z > 1) continue;                           // 카메라 뒤
+    const d = Math.hypot((_p.x + 1) / 2 * innerWidth - cx,
+                         (-_p.y + 1) / 2 * innerHeight - cy);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', e => downAt = { x: e.clientX, y: e.clientY });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (!downAt || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 8) return;
+  const i = pick(e.clientX, e.clientY);
+  if (i < 0) { closeInfo(); return; }                 // 빈 곳을 누르면 닫는다
+  const f = visible[i];
+  selectedId = f.id;
+  heroId = f.id; heroSince = Date.now() / 1000;       // 누른 비행기를 카메라가 따라간다
+  manualUntil = 0;
+  show(f);
+});
+// 화면 중앙에서 가장 가까운 기체 — 자체 점검이 항상 하나는 집도록.
+function nearestToCenter() {
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < visible.length; i++) {
+    _p.copy(visPos[i]).project(camera);
+    if (_p.z > 1) continue;
+    const d = Math.hypot(_p.x, _p.y);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+function closeInfo() { selectedId = null; $('info').style.display = 'none'; }
+$('close').onclick = closeInfo;
+$('speed').onclick = () => setSpeed(SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length]);
+
+// 공항 전환 — 같은 코드, 데이터만 갈아 끼운다. 링크라서 새 탭·뒤로가기가 그대로 된다.
+const CODES = Object.keys(APS.list);
+function paintAirport() {
+  $('apt').innerHTML = '';
+  for (const c of CODES) {
+    const a = document.createElement('a');
+    a.textContent = APS.list[c].short;
+    a.title = APS.list[c].name;
+    if (c === A) a.className = 'on';
+    const u = new URL(location.href);
+    u.searchParams.set('a', c);
+    a.href = u.toString();
+    $('apt').appendChild(a);
+  }
+}
+
+const TERM_LABEL = { P01: 'T1', P02: 'T2', P03: '탑승동' };
+
+// ISO 3166-1 alpha-2 -> 국기 이모지. 'JP' -> 🇯🇵
+// 지역표시문자(U+1F1E6~) 두 개를 잇는 것이 국기 이모지의 정의다.
+const flagOf = cc => (/^[A-Z]{2}$/.test(cc || '')
+  ? String.fromCodePoint(...[...cc].map(c => 0x1F1E6 + c.charCodeAt(0) - 65)) : '');
+const hhmm = ts => { const d = new Date(ts * 1000);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+
+function show(f) {
+  const arr = f.dir === 'A';
+  $('iNo').textContent = f.no + (f.share ? `  (${f.share.join(', ')} 공동운항)` : '');
+  const mins = Math.round((f.est - clockNow()) / 60);
+  const when = mins > 0 ? `${mins}분 후` : `${-mins}분 전`;
+  const fl = flagOf(f.cc);
+  $('iRt').textContent = arr
+    ? `${fl} ${f.city} → 🇰🇷 ${AP.short} · ${hhmm(f.est)} ${when} 도착`
+    : `🇰🇷 ${AP.short} → ${fl} ${f.city} · ${hhmm(f.est)} ${when} 출발`;
+  const tag = [];
+  if (f.air) tag.push(`<span>${f.air}</span>`);
+  if (f.st) tag.push(`<span><b>${f.st}</b></span>`);
+  if (f.gate) tag.push(`<span>${arr ? '게이트' : '탑승구'} <b>${f.gate}</b></span>`);
+  if (f.term) tag.push(`<span>${TERM_LABEL[f.term] || f.term}</span>`);
+  if (f.ac) tag.push(`<span>${f.ac}${f.reg ? ' · ' + f.reg : ''}</span>`);
+  if (f.dist) tag.push(`<span>${f.dist.toLocaleString()} km</span>`);
+  if (f.est !== f.sch) tag.push(`<span>예정 ${hhmm(f.sch)}</span>`);
+  $('iMeta').innerHTML = tag.join('');
+  $('info').style.display = 'block';
+}
+
+function refreshHud() {
+  if (!DATA) return;
+  $('nArr').textContent = DATA.counts.arrivals;
+  $('nDep').textContent = DATA.counts.departures;
+  updateStale();
+}
+
+// ---------------------------------------------------------------------------
+load().then(() => {
+  document.title = `${AP.name} 라이브`;
+  $('title').textContent = AP.name;
+  $('credit').textContent = `공항 도형 © OpenStreetMap 기여자 · 운항정보 ${AP.credit}`;
+  paintAirport();
+  refreshHud();
+  paintSpeed();
+  window.__sceneUp = true;
+  const b = $('boot'); b.classList.add('gone'); setTimeout(() => b.remove(), 700);
+  setTimeout(() => $('hint').style.opacity = 0, 7000);
+}).catch(e => window.__bootFail('데이터를 불러오지 못했습니다.', e && e.message));
+
+setInterval(() => { if (!paused) load().then(refreshHud).catch(() => {}); }, 5 * 60 * 1000);
+setInterval(updateStale, 60 * 1000);
+</script>
+</body>
+</html>
